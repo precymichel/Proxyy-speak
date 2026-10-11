@@ -1,0 +1,31 @@
+services:
+  server:
+    build: ./server
+    environment:
+      PORT: 4000
+      CLIENT_ORIGIN: http://localhost:8080
+      MONGODB_URI: mongodb://mongo:27017/proxispeak
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    depends_on: [mongo, redis]
+    restart: unless-stopped
+  client:
+    build:
+      context: ./client
+      args:
+        VITE_SERVER_URL: http://localhost:4000
+    ports: ["8080:80"]
+    depends_on: [server]
+    restart: unless-stopped
+  mongo:
+    image: mongo:7
+    volumes: [mongo_data:/data/db]
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis_data:/data]
+    restart: unless-stopped
+volumes:
+  mongo_data:
+  redis_data:
