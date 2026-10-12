@@ -110,21 +110,58 @@ io.on('connection', (socket) => {
     io.to(safeRoom).emit('users:update', roomUsers(safeRoom));
   });
 
-  socket.on('avatar:move', ({ x, y } = {}) => {
-    const user = users.get(socket.id);
-    if (!user) return;
-    user.x = validCoord(x, 776, user.x);
-    user.y = validCoord(y, 476, user.y);
-    users.set(socket.id, user);
-    if (positionsCollection) {
-      positionsCollection.updateOne({ roomId: user.roomId, socketId: socket.id },
-        { $set: { x: user.x, y: user.y,
-          location: { type: 'Point', coordinates: [user.x, user.y] }, updatedAt: new Date() } })
-        .catch((e) => console.error('Mongo position update failed:', e.message));
-    }
-    io.to(user.roomId).emit('avatar:moved', user);
-    io.to(user.roomId).emit('users:update', roomUsers(user.roomId));
-  });
+ 
+socket.on('avatar:move', (data = {}) => {
+  const user = users.get(socket.id);
+  if (!user) return;
+
+  const { x, y } = data;
+
+  // Reject invalid coordinates
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y)
+  ) {
+    socket.emit('avatar:move:error', {
+      message: 'Invalid avatar coordinates'
+    });
+    return;
+  }
+
+  // Keep avatar inside office boundaries
+  user.x = validCoord(x, 776, user.x);
+  user.y = validCoord(y, 476, user.y);
+
+  users.set(socket.id, user);
+
+  // Save position if MongoDB is enabled
+  if (positionsCollection) {
+    positionsCollection.updateOne(
+      { roomId: user.roomId, socketId: socket.id },
+      {
+        $set: {
+          x: user.x,
+          y: user.y,
+          location: {
+            type: 'Point',
+            coordinates: [user.x, user.y]
+          },
+          updatedAt: new Date()
+        }
+      }
+    ).catch((error) => {
+      console.error('Mongo position update failed:', error.message);
+    });
+  }
+
+  // Broadcast movement to users in the same room
+  io.to(user.roomId).emit('avatar:moved', user);
+  io.to(user.roomId).emit(
+    'users:update',
+    roomUsers(user.roomId)
+  );
+});
+
 
   socket.on('audio:signal', ({ targetId, signal } = {}) => {
     if (!targetId || !signal || !users.has(socket.id) || !users.has(targetId)) return;
