@@ -96,6 +96,11 @@ let redisClients = null;
 const roomUsers = (roomId) =>
   [...users.values()].filter((user) => user.roomId === roomId);
 
+// Keep the room's user list in sync after joins and disconnects.
+const broadcastRoomUsers = (roomId) => {
+  io.to(roomId).emit('users:update', roomUsers(roomId));
+};
+
 // Accept only actual finite numbers.
 // Clamp valid numbers to the office boundaries.
 const validCoord = (value, max) => {
@@ -304,9 +309,11 @@ io.on('connection', (socket) => {
       users: roomUsers(safeRoom),
     });
 
+    // Notify existing members that a new user joined.
     socket.to(safeRoom).emit('user:joined', user);
 
-    io.to(safeRoom).emit('users:update', roomUsers(safeRoom));
+    // Keep every client in this room synchronized with the current user list.
+    broadcastRoomUsers(safeRoom);
   });
 
   // VALIDATED AVATAR MOVEMENT
@@ -399,11 +406,13 @@ io.on('connection', (socket) => {
         );
     }
 
+    // Notify the remaining room members that this user has left.
     io.to(user.roomId).emit('user:left', {
       id: socket.id,
     });
 
-    io.to(user.roomId).emit('users:update', roomUsers(user.roomId));
+    // Publish the updated room roster after removing the disconnected user.
+    broadcastRoomUsers(user.roomId);
   });
 });
 

@@ -102,34 +102,86 @@ export default function App() {
 
   const joinOffice = (event) => {
     event.preventDefault();
+
+    // Avoid leaving multiple Socket.IO connections active if the form is submitted twice.
+    socketRef.current?.disconnect();
+
+    const requestedName = name.trim() || 'Guest';
+    const requestedRoom = roomId.trim() || 'main-office';
     const socket = io(SERVER_URL);
     socketRef.current = socket;
+
     socket.on('connect', () => {
       setConnected(true);
-      socket.emit('office:join', { name: name.trim() || 'Guest', roomId: roomId.trim() || 'main-office' });
+      setStatus('Connected. Joining your office...');
+      // Also runs after Socket.IO reconnects, allowing the new socket ID to rejoin.
+      socket.emit('office:join', { name: requestedName, roomId: requestedRoom });
     });
-    socket.on('connect_error', () => setStatus('Cannot reach the server. Start the server and try again.'));
-    socket.on('office:joined', ({ selfId: id, users: initialUsers }) => {
-      setSelfId(id);
-      setUsers(initialUsers || []);
-      selfRef.current = (initialUsers || []).find((u) => u.id === id) || null;
+
+    socket.on('connect_error', () => {
+      setConnected(false);
+      setStatus('Cannot reach the server. Start the server and try again.');
+    });
+
+    socket.on('disconnect', () => {
+      setConnected(false);
+      setStatus('Connection lost. Trying to reconnect...');
+    });
+
+    socket.on('office:join:error', ({ message } = {}) => {
+      setStatus(message || 'Could not join the office. Please try again.');
+    });
+
+    socket.on('office:joined', ({ selfId: id, users: initialUsers } = {}) => {
+      const roster = Array.isArray(initialUsers) ? initialUsers : [];
+      setSelfId(id || '');
+      setUsers(roster);
+      selfRef.current = roster.find((user) => user.id === id) || null;
       setJoined(true);
-      setStatus('You are in the office. Move near another avatar to see proximity status.');
+      setStatus(`Joined ${requestedRoom}. ${roster.length} participant(s) currently in this room.`);
     });
-    socket.on('user:joined', (user) => setStatus(`${user.name} joined the office.`));
-    socket.on('avatar:moved', (user) => {
-      setUsers((old) => {
-        const found = old.some((u) => u.id === user.id);
-        return found ? old.map((u) => u.id === user.id ? user : u) : [...old, user];
+
+    // Add/update the joining user immediately; the room roster event remains authoritative.
+    socket.on('user:joined', (user) => {
+      if (!user?.id) return;
+      setUsers((current) => {
+        const exists = current.some((item) => item.id === user.id);
+        return exists
+          ? current.map((item) => item.id === user.id ? { ...item, ...user } : item)
+          : [...current, user];
       });
+      setStatus(`${user.name || 'A participant'} joined the office.`);
     });
-    socket.on('users:update', (nextUsers) => setUsers(nextUsers || []));
-    socket.on('user:left', ({ id }) => {
-      setUsers((old) => old.filter((u) => u.id !== id));
+
+    socket.on('avatar:moved', (user) => {
+      if (!user?.id) return;
+      setUsers((current) => {
+        const exists = current.some((item) => item.id === user.id);
+        return exists
+          ? current.map((item) => item.id === user.id ? { ...item, ...user } : item)
+          : [...current, user];
+      });
+      if (user.id === socket.id) {
+        selfRef.current = user;
+      }
+    });
+
+    // Server broadcasts the current room roster after joins and leaves.
+    socket.on('users:update', (nextUsers) => {
+      const roster = Array.isArray(nextUsers) ? nextUsers : [];
+      setUsers(roster);
+      selfRef.current = roster.find((user) => user.id === socket.id) || null;
+    });
+
+    socket.on('user:left', ({ id } = {}) => {
+      if (!id) return;
+      setUsers((current) => current.filter((user) => user.id !== id));
+      closePeer(id);
       setStatus('A participant left the office.');
     });
-    socket.on('audio:signal', async ({ fromId, signal }) => {
-      await handleSignal(fromId, signal);
+
+    socket.on('audio:signal', async ({ fromId, signal } = {}) => {
+      if (fromId && signal) await handleSignal(fromId, signal);
     });
   };
 
