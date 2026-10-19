@@ -1,5 +1,4 @@
 import React from 'react';
-
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 
@@ -293,20 +292,60 @@ export default function App() {
 
   if (!joined) {
     return (
-      <main className="join-screen">
-        <div className="join-card">
-          <div className="brand-mark">PS</div>
-          <p className="eyebrow">SPATIAL COLLABORATION</p>
-          <h1>Welcome to <span>ProxiSpeak</span></h1>
-          <p className="muted">A virtual office where conversations happen naturally, just like in person.</p>
-          <form onSubmit={joinOffice}>
-            <label>Your display name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Michel" maxLength={24} /></label>
-            <label>Office room<input value={roomId} onChange={(e) => setRoomId(e.target.value)} placeholder="main-office" maxLength={40} /></label>
-            <button className="primary" type="submit">Enter virtual office <span>→</span></button>
-          </form>
-          <p className="tiny">Prototype · Open this app in two browser windows to test multiplayer movement.</p>
-          <p className="status">{status}</p>
-        </div>
+      <main className="join-screen join-split-screen">
+        <section className="join-welcome-panel" aria-label="Welcome to ProxiSpeak">
+          <div className="join-brand-lockup">
+            <div className="brand-mark">PS</div>
+            <div>
+              <div className="join-brand-name">Proxi<span>Speak</span></div>
+              <p>Virtual Office. Real Conversations.</p>
+            </div>
+          </div>
+
+          <div className="join-welcome-copy">
+            <p className="join-kicker">YOUR TEAM, CLOSER</p>
+            <h1>Work Together.<br />Feel <span>Closer.</span></h1>
+            <p className="join-description">
+              Move around, talk naturally, and collaborate in a virtual space — just like a real office.
+            </p>
+
+            <ul className="join-feature-list">
+              <li><span className="join-feature-icon">◉</span><span>Real-time spatial audio</span></li>
+              <li><span className="join-feature-icon">▦</span><span>Interactive office spaces</span></li>
+              <li><span className="join-feature-icon">↗</span><span>More natural collaboration</span></li>
+            </ul>
+          </div>
+
+          <p className="join-welcome-footer">A shared space for better teamwork.</p>
+        </section>
+
+        <section className="join-form-panel" aria-label="Join your virtual office">
+          <div className="join-card">
+            <div className="join-form-brand">
+              <div className="brand-mark">PS</div>
+              <div>
+                <div className="join-brand-name">Proxi<span>Speak</span></div>
+                <p>Virtual Office. Real Conversations.</p>
+              </div>
+            </div>
+
+            <p className="eyebrow">JOIN YOUR SPACE</p>
+            <h2>Welcome to Proxi<span>Speak</span></h2>
+            <p className="muted">Enter your details to join the virtual office and start connecting with your team.</p>
+
+            <form onSubmit={joinOffice}>
+              <label>Your name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Enter your name" maxLength={24} autoComplete="name" /></label>
+              <label>Office room<input value={roomId} onChange={(e) => setRoomId(e.target.value)} placeholder="main-office" maxLength={40} /></label>
+              <button className="primary join-submit" type="submit"><span>Join Office</span><span aria-hidden="true">→</span></button>
+            </form>
+
+            <div className="join-ready-status">
+              <span className="join-ready-dot" />
+              <div><strong>Ready to connect</strong><p>Real-time audio · Move freely · Work together</p></div>
+            </div>
+            <p className="status join-form-status" role="status">{status}</p>
+          </div>
+        </section>
       </main>
     );
   }
