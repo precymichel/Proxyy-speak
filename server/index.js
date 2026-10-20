@@ -1,4 +1,3 @@
-
 import express from 'express';
 import http from 'http';
 import cors from 'cors';
@@ -15,6 +14,10 @@ dotenv.config();
 const PORT = Number(process.env.PORT || 4000);
 const CLIENT_ORIGIN =
   process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+
+// Phase 2 — Day 2: Real-time presence settings
+const AWAY_AFTER_MS = 60_000;
+const PRESENCE_REFRESH_MS = 15_000;
 
 const app = express();
 
@@ -72,7 +75,7 @@ if (process.env.MONGODB_URI) {
     );
 
     // Pixel coordinates are not geographic coordinates.
-    // Therefore, do not create a 2dsphere index for x/y positions.
+    // Do not create a 2dsphere index for x/y positions.
 
     console.log('MongoDB connected; indexes ready');
   } catch (error) {
@@ -96,13 +99,11 @@ let redisClients = null;
 const roomUsers = (roomId) =>
   [...users.values()].filter((user) => user.roomId === roomId);
 
-// Keep the room's user list in sync after joins and disconnects.
 const broadcastRoomUsers = (roomId) => {
   io.to(roomId).emit('users:update', roomUsers(roomId));
 };
 
-// Accept only actual finite numbers.
-// Clamp valid numbers to the office boundaries.
+// Validate coordinates and keep avatars within office boundaries.
 const validCoord = (value, max) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return null;
@@ -198,6 +199,8 @@ app.get('/api/rooms/:roomId', async (req, res) => {
       }
     );
   } catch (error) {
+    console.error('Room layout load failed:', error.message);
+
     res.status(500).json({
       error: 'Could not load room layout',
     });
@@ -235,6 +238,8 @@ app.put('/api/rooms/:roomId', async (req, res) => {
 
     res.json({ ok: true, roomId });
   } catch (error) {
+    console.error('Room layout save failed:', error.message);
+
     res.status(500).json({
       error: 'Could not save room layout',
     });
@@ -247,7 +252,7 @@ app.put('/api/rooms/:roomId', async (req, res) => {
 
 io.on('connection', (socket) => {
   // JOIN OFFICE
-  socket.on('office:join', async (payload = {}) => {
+  socket.on('office:join', (payload = {}) => {
     // Prevent repeated joins and accidental room switching.
     if (users.has(socket.id)) {
       socket.emit('office:join:error', {
@@ -256,7 +261,11 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      Array.isArray(payload)
+    ) {
       socket.emit('office:join:error', {
         message: 'Invalid join request.',
       });
@@ -279,6 +288,11 @@ io.on('connection', (socket) => {
       x: 120 + Math.random() * 480,
       y: 100 + Math.random() * 280,
       joinedAt: new Date().toISOString(),
+
+      // Presence fields
+      status: 'online',
+      manualStatus: 'auto',
+      lastActivityAt: Date.now(),
     };
 
     socket.data.roomId = safeRoom;
@@ -309,16 +323,59 @@ io.on('connection', (socket) => {
       users: roomUsers(safeRoom),
     });
 
-    // Notify existing members that a new user joined.
     socket.to(safeRoom).emit('user:joined', user);
 
-    // Keep every client in this room synchronized with the current user list.
     broadcastRoomUsers(safeRoom);
   });
 
+  // ------------------------------------------------
+  // MANUAL PRESENCE STATUS
+  // ------------------------------------------------
+
+  socket.on('presence:update', (payload = {}) => {
+    const user = users.get(socket.id);
+    if (!user) return;
+
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      Array.isArray(payload)
+    ) {
+      return;
+    }
+
+    const requestedStatus = payload.status;
+
+    if (!['online', 'away', 'auto'].includes(requestedStatus)) {
+      return;
+    }
+
+    user.manualStatus = requestedStatus;
+
+    if (requestedStatus === 'auto') {
+      user.status =
+        Date.now() - user.lastActivityAt >= AWAY_AFTER_MS
+          ? 'away'
+          : 'online';
+    } else {
+      user.status = requestedStatus;
+    }
+
+    users.set(socket.id, user);
+
+    broadcastRoomUsers(user.roomId);
+  });
+
+  // ------------------------------------------------
   // VALIDATED AVATAR MOVEMENT
+  // ------------------------------------------------
+
   socket.on('avatar:move', (payload) => {
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      Array.isArray(payload)
+    ) {
       return;
     }
 
@@ -330,7 +387,7 @@ io.on('connection', (socket) => {
     const nextX = validCoord(payload.x, 776);
     const nextY = validCoord(payload.y, 476);
 
-    // Reject the entire movement if either coordinate is invalid.
+    // Reject movement if either coordinate is invalid.
     if (nextX === null || nextY === null) {
       socket.emit('avatar:move:error', {
         message: 'Invalid movement coordinates.',
@@ -341,7 +398,19 @@ io.on('connection', (socket) => {
     user.x = nextX;
     user.y = nextY;
 
+    // Avatar movement counts as activity in automatic mode.
+    const previousStatus = user.status;
+    user.lastActivityAt = Date.now();
+
+    if (user.manualStatus === 'auto') {
+      user.status = 'online';
+    }
+
     users.set(socket.id, user);
+
+    if (previousStatus !== user.status) {
+      broadcastRoomUsers(user.roomId);
+    }
 
     if (positionsCollection) {
       positionsCollection
@@ -360,14 +429,22 @@ io.on('connection', (socket) => {
         );
     }
 
-    // Synchronize movement only with members of the same room.
-    // Do not broadcast the complete user list on every movement.
+    // Synchronize movement only with users in the same room.
     io.to(user.roomId).emit('avatar:moved', user);
   });
 
+  // ------------------------------------------------
   // AUDIO SIGNALING
+  // ------------------------------------------------
+
   socket.on('audio:signal', (payload = {}) => {
-    if (!payload || typeof payload !== 'object') return;
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      Array.isArray(payload)
+    ) {
+      return;
+    }
 
     const { targetId, signal } = payload;
 
@@ -387,7 +464,10 @@ io.on('connection', (socket) => {
     });
   });
 
+  // ------------------------------------------------
   // DISCONNECT AND CLEANUP
+  // ------------------------------------------------
+
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
 
@@ -406,15 +486,48 @@ io.on('connection', (socket) => {
         );
     }
 
-    // Notify the remaining room members that this user has left.
     io.to(user.roomId).emit('user:left', {
       id: socket.id,
     });
 
-    // Publish the updated room roster after removing the disconnected user.
     broadcastRoomUsers(user.roomId);
   });
 });
+
+// --------------------------------------------------
+// AUTOMATIC PRESENCE REFRESH
+// --------------------------------------------------
+
+const presenceTimer = setInterval(() => {
+  const now = Date.now();
+  const changedRooms = new Set();
+
+  for (const user of users.values()) {
+    let nextStatus = user.status;
+
+    if (user.manualStatus === 'away') {
+      nextStatus = 'away';
+    } else if (user.manualStatus === 'online') {
+      nextStatus = 'online';
+    } else {
+      nextStatus =
+        now - user.lastActivityAt >= AWAY_AFTER_MS
+          ? 'away'
+          : 'online';
+    }
+
+    if (nextStatus !== user.status) {
+      user.status = nextStatus;
+      changedRooms.add(user.roomId);
+    }
+  }
+
+  for (const roomId of changedRooms) {
+    broadcastRoomUsers(roomId);
+  }
+}, PRESENCE_REFRESH_MS);
+
+presenceTimer.unref();
 
 // --------------------------------------------------
 // START SERVER

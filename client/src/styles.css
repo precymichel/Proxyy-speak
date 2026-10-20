@@ -1508,3 +1508,50 @@ main.join-screen.join-split-screen section.join-form-panel .join-card {
     animation: none !important;
   }
 }
+/* Presence status selector */
+.presence-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.presence-control select {
+  padding: 8px 10px;
+  border: 1px solid #d9deea;
+  border-radius: 8px;
+  background: #fff;
+  color: #202638;
+  font: inherit;
+  cursor: pointer;
+}
+
+.presence-control select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Online / away indicators in People here */
+.person-dot.online {
+  background-color: #22c55e;
+}
+
+.person-dot.away {
+  background-color: #f59e0b;
+}
+
+.person-dot.automatic {
+  background-color: #94a3b8;
+}
+
+@media (max-width: 640px) {
+  .top-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .presence-control {
+    flex-wrap: wrap;
+  }
+}
