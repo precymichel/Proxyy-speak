@@ -19,6 +19,9 @@ const CLIENT_ORIGIN =
 const AWAY_AFTER_MS = 60_000;
 const PRESENCE_REFRESH_MS = 15_000;
 
+// Phase 2 — Day 4: Proximity settings
+const PROXIMITY_RADIUS = 100;
+
 const app = express();
 
 app.disable('x-powered-by');
@@ -110,6 +113,71 @@ const validCoord = (value, max) => {
   }
 
   return Math.max(24, Math.min(max, value));
+};
+
+// --------------------------------------------------
+// PHASE 2 — DAY 4: PROXIMITY HELPERS
+// --------------------------------------------------
+
+// Calculate the straight-line distance between two avatars.
+const getDistance = (userA, userB) => {
+  return Math.hypot(
+    userA.x - userB.x,
+    userA.y - userB.y
+  );
+};
+
+// Find users within 100 pixels of the given avatar.
+// Only users in the same room are considered.
+// The current in-memory positions are authoritative.
+const findNearbyUsers = (
+  roomId,
+  x,
+  y,
+  excludeSocketId
+) => {
+  return roomUsers(roomId).filter((user) => {
+    if (user.id === excludeSocketId) {
+      return false;
+    }
+
+    const distance = Math.hypot(
+      user.x - x,
+      user.y - y
+    );
+
+    return distance <= PROXIMITY_RADIUS;
+  });
+};
+
+// Send the current nearby participant IDs to one socket.
+const updateProximityForSocket = (socket, user) => {
+  const nearbyUsers = findNearbyUsers(
+    user.roomId,
+    user.x,
+    user.y,
+    socket.id
+  );
+
+  socket.emit('proximity:update', {
+    radius: PROXIMITY_RADIUS,
+    nearbyUserIds: nearbyUsers.map(
+      (nearbyUser) => nearbyUser.id
+    ),
+  });
+};
+
+// Refresh proximity lists for all participants in one room.
+const broadcastRoomProximity = (roomId) => {
+  const participants = roomUsers(roomId);
+
+  for (const user of participants) {
+    const participantSocket = io.sockets.sockets.get(user.id);
+
+    if (participantSocket) {
+      updateProximityForSocket(participantSocket, user);
+    }
+  }
 };
 
 // --------------------------------------------------
@@ -251,7 +319,10 @@ app.put('/api/rooms/:roomId', async (req, res) => {
 // --------------------------------------------------
 
 io.on('connection', (socket) => {
+  // ------------------------------------------------
   // JOIN OFFICE
+  // ------------------------------------------------
+
   socket.on('office:join', (payload = {}) => {
     // Prevent repeated joins and accidental room switching.
     if (users.has(socket.id)) {
@@ -289,7 +360,7 @@ io.on('connection', (socket) => {
       y: 100 + Math.random() * 280,
       joinedAt: new Date().toISOString(),
 
-      // Presence fields
+      // Existing presence fields
       status: 'online',
       manualStatus: 'auto',
       lastActivityAt: Date.now(),
@@ -326,6 +397,9 @@ io.on('connection', (socket) => {
     socket.to(safeRoom).emit('user:joined', user);
 
     broadcastRoomUsers(safeRoom);
+
+    // New: update proximity after a user joins.
+    broadcastRoomProximity(safeRoom);
   });
 
   // ------------------------------------------------
@@ -429,12 +503,15 @@ io.on('connection', (socket) => {
         );
     }
 
-    // Synchronize movement only with users in the same room.
+    // Preserve existing movement synchronization.
     io.to(user.roomId).emit('avatar:moved', user);
+
+    // New: update proximity for every user in this room.
+    broadcastRoomProximity(user.roomId);
   });
 
   // ------------------------------------------------
-  // AUDIO SIGNALING
+  // AUDIO SIGNALING — 100-PIXEL PROXIMITY CHECK
   // ------------------------------------------------
 
   socket.on('audio:signal', (payload = {}) => {
@@ -458,6 +535,27 @@ io.on('connection', (socket) => {
     // Prevent signaling between different rooms.
     if (sender.roomId !== target.roomId) return;
 
+    // Ensure all coordinates are valid numbers.
+    if (
+      ![
+        sender.x,
+        sender.y,
+        target.x,
+        target.y,
+      ].every(Number.isFinite)
+    ) {
+      return;
+    }
+
+    // Calculate the actual distance between the avatars.
+    const distance = getDistance(sender, target);
+
+    // Do not forward WebRTC signaling beyond 100 pixels.
+    if (distance > PROXIMITY_RADIUS) {
+      return;
+    }
+
+    // Only send the signal to the intended target.
     io.to(targetId).emit('audio:signal', {
       fromId: socket.id,
       signal,
@@ -491,6 +589,9 @@ io.on('connection', (socket) => {
     });
 
     broadcastRoomUsers(user.roomId);
+
+    // New: remove the disconnected user from nearby-user lists.
+    broadcastRoomProximity(user.roomId);
   });
 });
 
@@ -536,5 +637,9 @@ presenceTimer.unref();
 httpServer.listen(PORT, () => {
   console.log(
     `ProxiSpeak server running at http://localhost:${PORT}`
+  );
+
+  console.log(
+    `Proximity detection enabled: ${PROXIMITY_RADIUS} pixels`
   );
 });

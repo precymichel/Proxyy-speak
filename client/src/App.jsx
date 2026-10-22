@@ -11,8 +11,8 @@ import { io } from 'socket.io-client';
 const SERVER_URL =
   import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
 
-const DISTANCE_LIMIT = 180;
-const AUDIO_RANGE = 300;
+const DISTANCE_LIMIT = 100;
+const AUDIO_RANGE = 100;
 
 function distance(a, b) {
   return Math.round(Math.hypot(a.x - b.x, a.y - b.y));
@@ -240,6 +240,25 @@ export default function App() {
 
   async function handleSignal(fromId, signal) {
     if (!fromId || !signal) return;
+
+    // Only accept audio signaling from a teammate in this room and within 100px.
+    const currentUsers = usersRef.current;
+    const currentMe = currentUsers.find(
+      (user) => user.id === selfIdRef.current
+    );
+    const peer = currentUsers.find((user) => user.id === fromId);
+
+    const sameRoom =
+      peer && (!peer.roomId || peer.roomId === roomRef.current);
+    const withinRange =
+      currentMe &&
+      peer &&
+      distance(currentMe, peer) <= DISTANCE_LIMIT;
+
+    if (!sameRoom || !withinRange) {
+      closePeer(fromId);
+      return;
+    }
 
     try {
       const pc = getPeer(fromId);
@@ -544,6 +563,23 @@ export default function App() {
       audio.volume = Math.max(0, Math.min(1, 1 - d / AUDIO_RANGE));
     });
   }, [users, selfId, me]);
+
+  // Close established audio connections as soon as a teammate leaves 100px range.
+  useEffect(() => {
+    if (!joined || !selfId || !me) return;
+
+    for (const peerId of peersRef.current.keys()) {
+      const peer = users.find((user) => user.id === peerId);
+      const sameRoom =
+        peer && (!peer.roomId || peer.roomId === roomId);
+      const withinRange =
+        peer && distance(me, peer) <= DISTANCE_LIMIT;
+
+      if (!sameRoom || !withinRange) {
+        closePeer(peerId);
+      }
+    }
+  }, [joined, selfId, users, roomId, me, closePeer]);
 
   // Start calls with nearby participants when the mic is enabled.
   useEffect(() => {
