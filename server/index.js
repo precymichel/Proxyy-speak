@@ -1,3 +1,4 @@
+
 import express from 'express';
 import http from 'http';
 import cors from 'cors';
@@ -8,6 +9,13 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import dotenv from 'dotenv';
 import { Server } from 'socket.io';
 import { MongoClient } from 'mongodb';
+
+// Phase 2 — Day 6: Spatial audit integration
+import {
+  distance2D,
+  filterNearbyUsers,
+  clusterUsers,
+} from './lib/spatial.js';
 
 dotenv.config();
 
@@ -116,38 +124,62 @@ const validCoord = (value, max) => {
 };
 
 // --------------------------------------------------
-// PHASE 2 — DAY 4: PROXIMITY HELPERS
+// PHASE 2 — DAY 6: SPATIAL PROXIMITY HELPERS
 // --------------------------------------------------
 
-// Calculate the straight-line distance between two avatars.
+// Use the tested spatial utility to calculate distance.
 const getDistance = (userA, userB) => {
-  return Math.hypot(
-    userA.x - userB.x,
-    userA.y - userB.y
-  );
+  return distance2D(userA, userB);
 };
 
-// Find users within 100 pixels of the given avatar.
-// Only users in the same room are considered.
-// The current in-memory positions are authoritative.
+// Find nearby users using spatial clusters.
+// Only users in the same room and within the radius are returned.
 const findNearbyUsers = (
   roomId,
   x,
   y,
   excludeSocketId
 ) => {
-  return roomUsers(roomId).filter((user) => {
-    if (user.id === excludeSocketId) {
-      return false;
+  const participants = roomUsers(roomId);
+
+  const currentUser = {
+    id: excludeSocketId,
+    roomId,
+    x,
+    y,
+  };
+
+  // Group users into cells of 100 pixels.
+  const clusters = clusterUsers(
+    participants,
+    PROXIMITY_RADIUS
+  );
+
+  const cellX = Math.floor(x / PROXIMITY_RADIUS);
+  const cellY = Math.floor(y / PROXIMITY_RADIUS);
+
+  // Inspect the current cell and its eight neighbouring cells.
+  const candidates = [];
+
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const key =
+        `${roomId}:${cellX + dx}:${cellY + dy}`;
+
+      const cellUsers = clusters.get(key);
+
+      if (cellUsers) {
+        candidates.push(...cellUsers);
+      }
     }
+  }
 
-    const distance = Math.hypot(
-      user.x - x,
-      user.y - y
-    );
-
-    return distance <= PROXIMITY_RADIUS;
-  });
+  // Apply the exact distance, identity and room checks.
+  return filterNearbyUsers(
+    candidates,
+    currentUser,
+    PROXIMITY_RADIUS
+  );
 };
 
 // Send the current nearby participant IDs to one socket.
@@ -398,7 +430,7 @@ io.on('connection', (socket) => {
 
     broadcastRoomUsers(safeRoom);
 
-    // New: update proximity after a user joins.
+    // Update proximity after a user joins.
     broadcastRoomProximity(safeRoom);
   });
 
@@ -506,7 +538,7 @@ io.on('connection', (socket) => {
     // Preserve existing movement synchronization.
     io.to(user.roomId).emit('avatar:moved', user);
 
-    // New: update proximity for every user in this room.
+    // Refresh proximity for users in this room only.
     broadcastRoomProximity(user.roomId);
   });
 
@@ -547,7 +579,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Calculate the actual distance between the avatars.
+    // Use the integrated spatial distance function.
     const distance = getDistance(sender, target);
 
     // Do not forward WebRTC signaling beyond 100 pixels.
@@ -590,7 +622,7 @@ io.on('connection', (socket) => {
 
     broadcastRoomUsers(user.roomId);
 
-    // New: remove the disconnected user from nearby-user lists.
+    // Remove the disconnected user from proximity lists.
     broadcastRoomProximity(user.roomId);
   });
 });
@@ -642,4 +674,6 @@ httpServer.listen(PORT, () => {
   console.log(
     `Proximity detection enabled: ${PROXIMITY_RADIUS} pixels`
   );
+
+  console.log('Spatial utilities integrated successfully');
 });
