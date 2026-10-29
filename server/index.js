@@ -1,4 +1,3 @@
-
 import express from 'express';
 import http from 'http';
 import cors from 'cors';
@@ -10,7 +9,6 @@ import dotenv from 'dotenv';
 import { Server } from 'socket.io';
 import { MongoClient } from 'mongodb';
 
-// Phase 2 — Day 6: Spatial audit integration
 import {
   distance2D,
   filterNearbyUsers,
@@ -23,12 +21,18 @@ const PORT = Number(process.env.PORT || 4000);
 const CLIENT_ORIGIN =
   process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 
-// Phase 2 — Day 2: Real-time presence settings
 const AWAY_AFTER_MS = 60_000;
 const PRESENCE_REFRESH_MS = 15_000;
-
-// Phase 2 — Day 4: Proximity settings
 const PROXIMITY_RADIUS = 100;
+
+// MongoDB's legacy 2d index uses a limited coordinate range.
+// Scale canvas pixels down by 10 before storing them in MongoDB.
+const COORD_SCALE = 10;
+
+const toIndexedCoords = (x, y) => [
+  x / COORD_SCALE,
+  y / COORD_SCALE,
+];
 
 const app = express();
 
@@ -80,13 +84,16 @@ if (process.env.MONGODB_URI) {
       { unique: true }
     );
 
+    // IMPORTANT: the 2d index field must come first.
+    await positionsCollection.createIndex({
+      coords: '2d',
+      roomId: 1,
+    });
+
     await roomsCollection.createIndex(
       { roomId: 1 },
       { unique: true }
     );
-
-    // Pixel coordinates are not geographic coordinates.
-    // Do not create a 2dsphere index for x/y positions.
 
     console.log('MongoDB connected; indexes ready');
   } catch (error) {
@@ -97,7 +104,16 @@ if (process.env.MONGODB_URI) {
 
     positionsCollection = null;
     roomsCollection = null;
+
+    if (mongoClient) {
+      await mongoClient.close().catch(() => {});
+      mongoClient = null;
+    }
   }
+} else {
+  console.warn(
+    'MONGODB_URI is not configured. Running without persistence.'
+  );
 }
 
 // --------------------------------------------------
@@ -108,13 +124,14 @@ const users = new Map();
 let redisClients = null;
 
 const roomUsers = (roomId) =>
-  [...users.values()].filter((user) => user.roomId === roomId);
+  [...users.values()].filter(
+    (user) => user.roomId === roomId
+  );
 
 const broadcastRoomUsers = (roomId) => {
   io.to(roomId).emit('users:update', roomUsers(roomId));
 };
 
-// Validate coordinates and keep avatars within office boundaries.
 const validCoord = (value, max) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return null;
@@ -124,22 +141,61 @@ const validCoord = (value, max) => {
 };
 
 // --------------------------------------------------
-// PHASE 2 — DAY 6: SPATIAL PROXIMITY HELPERS
+// SPATIAL PROXIMITY HELPERS
 // --------------------------------------------------
 
-// Use the tested spatial utility to calculate distance.
-const getDistance = (userA, userB) => {
-  return distance2D(userA, userB);
-};
+const getDistance = (userA, userB) =>
+  distance2D(userA, userB);
 
-// Find nearby users using spatial clusters.
-// Only users in the same room and within the radius are returned.
-const findNearbyUsers = (
+const findNearbyUsers = async (
   roomId,
   x,
   y,
   excludeSocketId
 ) => {
+  if (positionsCollection) {
+    try {
+      const documents = await positionsCollection
+        .find({
+          roomId,
+          socketId: { $ne: excludeSocketId },
+          coords: {
+            $near: toIndexedCoords(x, y),
+            $maxDistance: PROXIMITY_RADIUS / COORD_SCALE,
+          },
+        })
+        .toArray();
+        console.log('\n========== MONGODB $near QUERY ==========');
+console.log('Room:', roomId);
+console.log('Coordinates:', toIndexedCoords(x, y));
+console.log(
+  'Maximum distance:',
+  PROXIMITY_RADIUS / COORD_SCALE
+);
+console.log('=========================================\n');
+
+      // Return only users currently connected to this server.
+      const activeSocketIds = new Set(
+        roomUsers(roomId).map((user) => user.id)
+      );
+
+      return documents
+        .filter((document) =>
+          activeSocketIds.has(document.socketId)
+        )
+        .map((document) => ({
+          ...document,
+          id: document.socketId,
+        }));
+    } catch (error) {
+      console.error(
+        'MongoDB $near query failed; using in-memory fallback:',
+        error.message
+      );
+    }
+  }
+
+  // In-memory fallback if MongoDB is unavailable or the query fails.
   const participants = roomUsers(roomId);
 
   const currentUser = {
@@ -149,7 +205,6 @@ const findNearbyUsers = (
     y,
   };
 
-  // Group users into cells of 100 pixels.
   const clusters = clusterUsers(
     participants,
     PROXIMITY_RADIUS
@@ -157,8 +212,6 @@ const findNearbyUsers = (
 
   const cellX = Math.floor(x / PROXIMITY_RADIUS);
   const cellY = Math.floor(y / PROXIMITY_RADIUS);
-
-  // Inspect the current cell and its eight neighbouring cells.
   const candidates = [];
 
   for (let dx = -1; dx <= 1; dx++) {
@@ -174,7 +227,6 @@ const findNearbyUsers = (
     }
   }
 
-  // Apply the exact distance, identity and room checks.
   return filterNearbyUsers(
     candidates,
     currentUser,
@@ -182,9 +234,8 @@ const findNearbyUsers = (
   );
 };
 
-// Send the current nearby participant IDs to one socket.
-const updateProximityForSocket = (socket, user) => {
-  const nearbyUsers = findNearbyUsers(
+const updateProximityForSocket = async (socket, user) => {
+  const nearbyUsers = await findNearbyUsers(
     user.roomId,
     user.x,
     user.y,
@@ -199,17 +250,29 @@ const updateProximityForSocket = (socket, user) => {
   });
 };
 
-// Refresh proximity lists for all participants in one room.
-const broadcastRoomProximity = (roomId) => {
+const broadcastRoomProximity = async (roomId) => {
   const participants = roomUsers(roomId);
 
-  for (const user of participants) {
-    const participantSocket = io.sockets.sockets.get(user.id);
+  await Promise.all(
+    participants.map(async (user) => {
+      const participantSocket =
+        io.sockets.sockets.get(user.id);
 
-    if (participantSocket) {
-      updateProximityForSocket(participantSocket, user);
-    }
-  }
+      if (participantSocket) {
+        try {
+          await updateProximityForSocket(
+            participantSocket,
+            user
+          );
+        } catch (error) {
+          console.error(
+            'Proximity update failed:',
+            error.message
+          );
+        }
+      }
+    })
+  );
 };
 
 // --------------------------------------------------
@@ -317,7 +380,11 @@ app.put('/api/rooms/:roomId', async (req, res) => {
   const roomId = String(req.params.roomId).slice(0, 40);
   const layout = req.body?.layout;
 
-  if (!layout || typeof layout !== 'object' || Array.isArray(layout)) {
+  if (
+    !layout ||
+    typeof layout !== 'object' ||
+    Array.isArray(layout)
+  ) {
     return res.status(400).json({
       error: 'layout object required',
     });
@@ -351,12 +418,8 @@ app.put('/api/rooms/:roomId', async (req, res) => {
 // --------------------------------------------------
 
 io.on('connection', (socket) => {
-  // ------------------------------------------------
   // JOIN OFFICE
-  // ------------------------------------------------
-
-  socket.on('office:join', (payload = {}) => {
-    // Prevent repeated joins and accidental room switching.
+  socket.on('office:join', async (payload = {}) => {
     if (users.has(socket.id)) {
       socket.emit('office:join:error', {
         message: 'You have already joined a room.',
@@ -378,7 +441,8 @@ io.on('connection', (socket) => {
     const { name, roomId } = payload;
 
     const safeName =
-      String(name || 'Guest').trim().slice(0, 24) || 'Guest';
+      String(name || 'Guest').trim().slice(0, 24) ||
+      'Guest';
 
     const safeRoom =
       String(roomId || 'main-office').trim().slice(0, 40) ||
@@ -391,8 +455,6 @@ io.on('connection', (socket) => {
       x: 120 + Math.random() * 480,
       y: 100 + Math.random() * 280,
       joinedAt: new Date().toISOString(),
-
-      // Existing presence fields
       status: 'online',
       manualStatus: 'auto',
       lastActivityAt: Date.now(),
@@ -400,25 +462,28 @@ io.on('connection', (socket) => {
 
     socket.data.roomId = safeRoom;
     socket.join(safeRoom);
-
     users.set(socket.id, user);
 
     if (positionsCollection) {
-      positionsCollection
-        .updateOne(
+      try {
+        await positionsCollection.updateOne(
           { roomId: safeRoom, socketId: socket.id },
           {
             $set: {
               ...user,
               socketId: socket.id,
+              coords: toIndexedCoords(user.x, user.y),
               updatedAt: new Date(),
             },
           },
           { upsert: true }
-        )
-        .catch((error) =>
-          console.error('Mongo position save failed:', error.message)
         );
+      } catch (error) {
+        console.error(
+          'Mongo position save failed:',
+          error.message
+        );
+      }
     }
 
     socket.emit('office:joined', {
@@ -429,15 +494,10 @@ io.on('connection', (socket) => {
     socket.to(safeRoom).emit('user:joined', user);
 
     broadcastRoomUsers(safeRoom);
-
-    // Update proximity after a user joins.
-    broadcastRoomProximity(safeRoom);
+    await broadcastRoomProximity(safeRoom);
   });
 
-  // ------------------------------------------------
   // MANUAL PRESENCE STATUS
-  // ------------------------------------------------
-
   socket.on('presence:update', (payload = {}) => {
     const user = users.get(socket.id);
     if (!user) return;
@@ -452,7 +512,9 @@ io.on('connection', (socket) => {
 
     const requestedStatus = payload.status;
 
-    if (!['online', 'away', 'auto'].includes(requestedStatus)) {
+    if (
+      !['online', 'away', 'auto'].includes(requestedStatus)
+    ) {
       return;
     }
 
@@ -468,15 +530,29 @@ io.on('connection', (socket) => {
     }
 
     users.set(socket.id, user);
-
     broadcastRoomUsers(user.roomId);
+
+    if (positionsCollection) {
+      positionsCollection.updateOne(
+        { roomId: user.roomId, socketId: socket.id },
+        {
+          $set: {
+            status: user.status,
+            manualStatus: user.manualStatus,
+            updatedAt: new Date(),
+          },
+        }
+      ).catch((error) => {
+        console.error(
+          'Mongo presence update failed:',
+          error.message
+        );
+      });
+    }
   });
 
-  // ------------------------------------------------
   // VALIDATED AVATAR MOVEMENT
-  // ------------------------------------------------
-
-  socket.on('avatar:move', (payload) => {
+  socket.on('avatar:move', async (payload) => {
     if (
       !payload ||
       typeof payload !== 'object' ||
@@ -486,14 +562,11 @@ io.on('connection', (socket) => {
     }
 
     const user = users.get(socket.id);
-
-    // A socket must join an office before moving.
     if (!user) return;
 
     const nextX = validCoord(payload.x, 776);
     const nextY = validCoord(payload.y, 476);
 
-    // Reject movement if either coordinate is invalid.
     if (nextX === null || nextY === null) {
       socket.emit('avatar:move:error', {
         message: 'Invalid movement coordinates.',
@@ -504,7 +577,6 @@ io.on('connection', (socket) => {
     user.x = nextX;
     user.y = nextY;
 
-    // Avatar movement counts as activity in automatic mode.
     const previousStatus = user.status;
     user.lastActivityAt = Date.now();
 
@@ -519,33 +591,35 @@ io.on('connection', (socket) => {
     }
 
     if (positionsCollection) {
-      positionsCollection
-        .updateOne(
+      try {
+        await positionsCollection.updateOne(
           { roomId: user.roomId, socketId: socket.id },
           {
             $set: {
               x: user.x,
               y: user.y,
+              coords: toIndexedCoords(user.x, user.y),
+              status: user.status,
+              lastActivityAt: user.lastActivityAt,
               updatedAt: new Date(),
             },
-          }
-        )
-        .catch((error) =>
-          console.error('Mongo position update failed:', error.message)
+          },
+          { upsert: true }
         );
+      } catch (error) {
+        console.error(
+          'Mongo position update failed:',
+          error.message
+        );
+      }
     }
 
-    // Preserve existing movement synchronization.
     io.to(user.roomId).emit('avatar:moved', user);
 
-    // Refresh proximity for users in this room only.
-    broadcastRoomProximity(user.roomId);
+    await broadcastRoomProximity(user.roomId);
   });
 
-  // ------------------------------------------------
-  // AUDIO SIGNALING — 100-PIXEL PROXIMITY CHECK
-  // ------------------------------------------------
-
+  // AUDIO SIGNALING
   socket.on('audio:signal', (payload = {}) => {
     if (
       !payload ||
@@ -556,18 +630,14 @@ io.on('connection', (socket) => {
     }
 
     const { targetId, signal } = payload;
-
     if (!targetId || !signal) return;
 
     const sender = users.get(socket.id);
     const target = users.get(targetId);
 
     if (!sender || !target) return;
-
-    // Prevent signaling between different rooms.
     if (sender.roomId !== target.roomId) return;
 
-    // Ensure all coordinates are valid numbers.
     if (
       ![
         sender.x,
@@ -579,41 +649,37 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Use the integrated spatial distance function.
     const distance = getDistance(sender, target);
 
-    // Do not forward WebRTC signaling beyond 100 pixels.
     if (distance > PROXIMITY_RADIUS) {
       return;
     }
 
-    // Only send the signal to the intended target.
     io.to(targetId).emit('audio:signal', {
       fromId: socket.id,
       signal,
     });
   });
 
-  // ------------------------------------------------
   // DISCONNECT AND CLEANUP
-  // ------------------------------------------------
-
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     const user = users.get(socket.id);
-
     if (!user) return;
 
     users.delete(socket.id);
 
     if (positionsCollection) {
-      positionsCollection
-        .deleteOne({
+      try {
+        await positionsCollection.deleteOne({
           roomId: user.roomId,
           socketId: socket.id,
-        })
-        .catch((error) =>
-          console.error('Mongo position cleanup failed:', error.message)
+        });
+      } catch (error) {
+        console.error(
+          'Mongo position cleanup failed:',
+          error.message
         );
+      }
     }
 
     io.to(user.roomId).emit('user:left', {
@@ -621,9 +687,7 @@ io.on('connection', (socket) => {
     });
 
     broadcastRoomUsers(user.roomId);
-
-    // Remove the disconnected user from proximity lists.
-    broadcastRoomProximity(user.roomId);
+    await broadcastRoomProximity(user.roomId);
   });
 });
 
@@ -652,6 +716,23 @@ const presenceTimer = setInterval(() => {
     if (nextStatus !== user.status) {
       user.status = nextStatus;
       changedRooms.add(user.roomId);
+
+      if (positionsCollection) {
+        positionsCollection.updateOne(
+          { roomId: user.roomId, socketId: user.id },
+          {
+            $set: {
+              status: user.status,
+              updatedAt: new Date(),
+            },
+          }
+        ).catch((error) => {
+          console.error(
+            'Mongo automatic presence update failed:',
+            error.message
+          );
+        });
+      }
     }
   }
 
@@ -672,8 +753,30 @@ httpServer.listen(PORT, () => {
   );
 
   console.log(
-    `Proximity detection enabled: ${PROXIMITY_RADIUS} pixels`
+    `MongoDB $near proximity radius: ${PROXIMITY_RADIUS} pixels`
   );
 
   console.log('Spatial utilities integrated successfully');
 });
+
+// Graceful shutdown
+const shutdown = async () => {
+  clearInterval(presenceTimer);
+
+  httpServer.close();
+
+  if (redisClients) {
+    await Promise.all(
+      redisClients.map((client) =>
+        client.quit().catch(() => {})
+      )
+    );
+  }
+
+  if (mongoClient) {
+    await mongoClient.close().catch(() => {});
+  }
+};
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
