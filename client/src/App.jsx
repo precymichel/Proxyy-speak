@@ -760,312 +760,101 @@ export default function App() {
   // Join screen.
   if (!joined) {
     return (
-      <main className="join-screen join-split-screen">
-        <section className="join-welcome-panel" aria-label="Welcome to ProxiSpeak">
-          <div className="join-brand-lockup">
-            <div className="brand-mark">PS</div>
-            <div>
-              <div className="join-brand-name">Proxi<span>Speak</span></div>
-              <p>Virtual Office. Real Conversations.</p>
-            </div>
+      <main className="ps-entry">
+        <section className="ps-entry-story">
+          <div className="ps-logo-lockup"><div className="ps-logo">PS</div><div><b>ProxiSpeak</b><small>THE SPACE TO WORK BETTER</small></div></div>
+          <div className="ps-entry-copy">
+            <span className="ps-overline">YOUR TEAM, IN THE SAME SPACE</span>
+            <h1>Good work<br/>happens <em>closer.</em></h1>
+            <p>A virtual office that brings spontaneous conversations back to remote work. Walk over, say hello, and collaborate naturally.</p>
+            <div className="ps-entry-points"><span><i>01</i> Walk up to teammates</span><span><i>02</i> Talk with spatial audio</span><span><i>03</i> Work together in real time</span></div>
           </div>
-
-          <div className="join-welcome-copy">
-            <p className="join-kicker">YOUR TEAM, CLOSER</p>
-            <h1>Work Together.<br />Feel <span>Closer.</span></h1>
-            <p className="join-description">
-              Move around, talk naturally, and collaborate in a virtual
-              space — just like a real office.
-            </p>
-            <ul className="join-feature-list">
-              <li><span className="join-feature-icon">◉</span><span>Real-time spatial audio</span></li>
-              <li><span className="join-feature-icon">▦</span><span>Interactive office spaces</span></li>
-              <li><span className="join-feature-icon">↗</span><span>More natural collaboration</span></li>
-            </ul>
-          </div>
-
-          <p className="join-welcome-footer">A shared space for better teamwork.</p>
+          <div className="ps-entry-foot"><span>PROXIMITY-POWERED COLLABORATION</span><span>EST. FOR BETTER TEAMWORK ↗</span></div>
         </section>
-
-        <section className="join-form-panel" aria-label="Join your virtual office">
-          <div className="join-card">
-            <div className="join-form-brand">
-              <div className="brand-mark">PS</div>
-              <div>
-                <div className="join-brand-name">Proxi<span>Speak</span></div>
-                <p>Virtual Office. Real Conversations.</p>
-              </div>
-            </div>
-
-            <p className="eyebrow">JOIN YOUR SPACE</p>
-            <h2>Welcome to Proxi<span>Speak</span></h2>
-            <p className="muted">
-              Enter your details to join the virtual office and start
-              connecting with your team.
-            </p>
-
+        <section className="ps-entry-form-wrap">
+          <div className="ps-entry-form-card">
+            <span className="ps-overline">GET STARTED</span>
+            <h2>Enter your workspace</h2>
+            <p>Choose how your teammates will see you and where you want to meet.</p>
             <form onSubmit={joinOffice}>
-              <label>
-                Your name
-                <input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  placeholder="Enter your name"
-                  maxLength={24}
-                  autoComplete="name"
-                />
-              </label>
-
-              <label>
-                Office room
-                <input
-                  value={roomId}
-                  onChange={(event) => setRoomId(event.target.value)}
-                  placeholder="main-office"
-                  maxLength={40}
-                />
-              </label>
-
-              <button className="primary join-submit" type="submit">
-                <span>Join Office</span><span aria-hidden="true">→</span>
-              </button>
+              <label>DISPLAY NAME<input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Michel" maxLength={24} autoComplete="name" /></label>
+              <label>WORKSPACE ID<input value={roomId} onChange={(event) => setRoomId(event.target.value)} placeholder="main-office" maxLength={40} /></label>
+              <button className="ps-enter-button" type="submit"><span>Enter workspace</span><span>↗</span></button>
             </form>
-
-            <div className="join-ready-status">
-              <span className="join-ready-dot" />
-              <div>
-                <strong>Ready to connect</strong>
-                <p>Real-time audio · Move freely · Work together</p>
-              </div>
-            </div>
-
-            <p className="status join-form-status" role="status">{status}</p>
+            <div className="ps-secure-note"><span className="ps-status-pip"/> Ready when you are <span>·</span> Live presence & spatial audio</div>
+            <p className="ps-entry-status" role="status">{status}</p>
           </div>
+          <div className="ps-form-caption">NO DOWNLOADS. JUST YOUR TEAM AND A LITTLE MORE ROOM TO CONNECT.</div>
         </section>
       </main>
     );
   }
 
-  // Main virtual office.
+  const otherParticipants = users.filter((user) => user.id !== selfId);
+
+  // Main virtual office. The collaboration/session logic above remains unchanged.
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand">
-          <div className="brand-mark small">PS</div>
-          <div>
-            <strong>ProxiSpeak</strong>
-            <span>Virtual workspace</span>
+    <main className="ps-app">
+      <aside className="ps-rail">
+        <div className="ps-rail-logo">PS</div>
+        <div className="ps-rail-divider" />
+        <button className="ps-rail-item active" title="Workspace" aria-label="Workspace"><span>⌂</span></button>
+        <button className="ps-rail-item" title="People" aria-label="People"><span>♧</span></button>
+        <button className="ps-rail-item" title="Audio" aria-label="Audio"><span>♫</span></button>
+        <div className="ps-rail-spacer" />
+        <div className="ps-rail-avatar">{(name.trim() || 'M').slice(0,1).toUpperCase()}</div>
+      </aside>
+
+      <section className="ps-main-column">
+        <header className="ps-topbar">
+          <div className="ps-breadcrumb"><span>WORKSPACES</span><b>/</b><strong>{roomId}</strong></div>
+          <div className="ps-topbar-actions">
+            <span className={`ps-connection ${connected ? 'is-online' : ''}`}><i />{connected ? 'All systems operational' : 'Reconnecting'}</span>
+            <label className="ps-presence"><span>STATUS</span><select value={presenceStatus} onChange={(event) => updatePresence(event.target.value)} disabled={!connected} aria-label="Choose your presence status"><option value="auto">Automatic</option><option value="online">Online</option><option value="away">Away</option></select></label>
+            <button className="ps-leave" onClick={leaveOffice}>Leave space <span>↗</span></button>
           </div>
-        </div>
+        </header>
 
-        <div className="top-actions">
-          <span className={`connection ${connected ? 'online' : ''}`}>
-            <i />{connected ? 'Connected' : 'Connecting'}
-          </span>
-
-          <label className="presence-control">
-            <span>My status</span>
-            <select
-              value={presenceStatus}
-              onChange={(event) => updatePresence(event.target.value)}
-              disabled={!connected}
-              aria-label="Choose your presence status"
-              title="Choose your presence status"
-            >
-              <option value="auto">Auto</option>
-              <option value="online">Online</option>
-              <option value="away">Away</option>
-            </select>
-          </label>
-
-          <button className="secondary" onClick={leaveOffice}>
-            Leave office
-          </button>
-        </div>
-      </header>
-
-      <div className="content">
-        <section className="welcome-row">
-          <div>
-            <p className="eyebrow">YOUR WORKSPACE</p>
-            <h1>{roomId}</h1>
-            <p className="muted">
-              Move around the office to connect with teammates nearby.
-            </p>
-          </div>
-          <div className="keyboard-hint">
-            <span>⌨</span> Move with <b>W A S D</b> or <b>↑ ↓ ← →</b>
-          </div>
-        </section>
-
-        <div className="main-grid">
-          <section className="office-card">
-            <div className="card-heading">
-              <div>
-                <h2>Office floor</h2>
-                <p>Live participant positions</p>
-              </div>
-              <span className="live-pill"><i /> LIVE</span>
-            </div>
-
-            <div className="office-map">
-              <div className="room room-one">
-                <span>COLLAB ZONE</span><div className="couch" /><div className="plant">♣</div>
-              </div>
-              <div className="room room-two">
-                <span>FOCUS AREA</span>
-                <div className="desk"><i /><i /></div>
-                <div className="desk second"><i /><i /></div>
-              </div>
-              <div className="room room-three">
-                <span>MEETING ROOM</span><div className="meeting-table" />
-              </div>
-              <div className="room room-four">
-                <span>LOUNGE</span><div className="round-table" />
-              </div>
-
-              {users.map((user) => {
-                const d = me && user.id !== selfId ? distance(me, user) : null;
-                const close = d !== null && d <= DISTANCE_LIMIT;
-
-                return (
-                  <div
-                    key={user.id}
-                    className={`avatar ${user.id === selfId ? 'self' : ''} ${close ? 'nearby' : ''}`}
-                    style={{
-                      left: `${(user.x / 800) * 100}%`,
-                      top: `${(user.y / 500) * 100}%`,
-                    }}
-                    title={`${user.name}${d !== null ? ` · ${d}px away` : ''}`}
-                  >
-                    <div className="avatar-face">{user.name.slice(0, 1).toUpperCase()}</div>
-                    <span>{user.name}{user.id === selfId ? ' (you)' : ''}</span>
-                  </div>
-                );
-              })}
-
-              {!users.length && <div className="empty-map">Waiting for teammates to join…</div>}
-            </div>
-
-            <div className="map-footer">
-              <span><i className="legend-self" /> You</span>
-              <span><i className="legend-near" /> Nearby teammate</span>
-              <span><i className="legend-other" /> Other teammate</span>
-            </div>
+        <div className="ps-workspace-content">
+          <section className="ps-page-heading">
+            <div><span className="ps-overline">LIVE COLLABORATION SPACE</span><h1>{roomId}<span className="ps-heading-live"><i/> LIVE</span></h1><p>Your team is one step away. Move around to start a conversation.</p></div>
+            <div className="ps-key-guide"><span className="ps-key-icon">⌘</span><div><b>MOVE YOUR AVATAR</b><small><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>or arrow keys</span></small></div></div>
           </section>
 
-          <aside className="side-column">
-            <section className="panel">
-              <div className="panel-heading">
-                <h2>People here</h2><span className="count">{users.length}</span>
-              </div>
-
-              <div className="people-list">
+          <div className="ps-dashboard-grid">
+            <section className="ps-floor-card">
+              <div className="ps-section-head"><div><span className="ps-overline">THE FLOOR PLAN</span><h2>Office overview</h2><p>Everyone's position, updated in real time</p></div><div className="ps-floor-meta"><span className="ps-live-indicator"><i/> LIVE MAP</span><span>{users.length} IN SPACE</span></div></div>
+              <div className="ps-floor-map">
+                <div className="ps-floor-grid" />
+                <div className="ps-zone ps-zone-lounge"><span className="ps-zone-label">01 / SOCIAL LOUNGE</span><div className="ps-sofa"><i/><i/><i/></div><div className="ps-plant plant-a">✳</div><div className="ps-plant plant-b">✳</div><span className="ps-zone-caption">Take a break, have a chat</span></div>
+                <div className="ps-zone ps-zone-focus"><span className="ps-zone-label">02 / FOCUS PODS</span><div className="ps-focus-desk desk-a"><i/><b/><span/></div><div className="ps-focus-desk desk-b"><i/><b/><span/></div><span className="ps-zone-caption">Quiet space for deep work</span></div>
+                <div className="ps-zone ps-zone-meeting"><span className="ps-zone-label">03 / MEETING ROOM</span><div className="ps-meeting-table"><i/><i/><i/><i/><b/></div><span className="ps-zone-caption">Ideas are better together</span></div>
+                <div className="ps-zone ps-zone-cafe"><span className="ps-zone-label">04 / THE CAFE</span><div className="ps-cafe-table"><i/><i/><i/><i/></div><span className="ps-zone-caption">Coffee & conversations</span></div>
+                <div className="ps-map-crosshair">N <span>↑</span></div>
                 {users.map((user) => {
                   const d = me && user.id !== selfId ? distance(me, user) : null;
-                  const userStatus = normalizePresence(user.status);
-
-                  const statusLabel =
-                    userStatus === 'away'
-                      ? 'Away'
-                      : userStatus === 'online'
-                        ? 'Online'
-                        : d === null
-                          ? 'Your position'
-                          : d <= DISTANCE_LIMIT
-                            ? 'Within earshot range'
-                            : `${d}px away`;
-
-                  return (
-                    <div className="person" key={user.id}>
-                      <div className={`person-avatar ${user.id === selfId ? 'me' : ''}`}>
-                        {user.name.slice(0, 1).toUpperCase()}
-                      </div>
-                      <div className="person-info">
-                        <strong>{user.name}{user.id === selfId ? ' (you)' : ''}</strong>
-                        <span>{statusLabel}</span>
-                      </div>
-                      <i
-                        className={`person-dot ${userStatus === 'away' ? 'away' : userStatus === 'online' ? 'online' : 'automatic'}`}
-                        title={`Status: ${userStatus}`}
-                        aria-label={`Status: ${userStatus}`}
-                      />
-                    </div>
-                  );
+                  const close = d !== null && d <= DISTANCE_LIMIT;
+                  return <div key={user.id} className={`ps-map-person ${user.id === selfId ? 'is-self' : ''} ${close ? 'is-nearby' : ''}`} style={{left:`${(user.x / 800) * 100}%`,top:`${(user.y / 500) * 100}%`}} title={`${user.name}${d !== null ? ` · ${d}px away` : ''}`}><div className="ps-person-marker">{user.name.slice(0,1).toUpperCase()}<span/></div><span className="ps-map-name">{user.name}{user.id === selfId ? ' (you)' : ''}</span></div>;
                 })}
+                {!users.length && <div className="ps-map-empty"><span>⌁</span><b>Your workspace is ready</b><small>Waiting for teammates to arrive</small></div>}
               </div>
+              <div className="ps-map-legend"><span><i className="legend-you"/> YOU</span><span><i className="legend-close"/> IN YOUR RANGE</span><span><i className="legend-away"/> TEAMMATE</span><small>PROXIMITY RANGE · {DISTANCE_LIMIT}px</small></div>
             </section>
 
-            <section className="panel audio-panel">
-              <div className="panel-heading">
-                <h2>Audio</h2><span className="audio-icon">♫</span>
-              </div>
+            <aside className="ps-right-rail">
+              <section className="ps-side-card ps-team-card"><div className="ps-side-title"><div><span className="ps-overline">YOUR CREW</span><h2>People in space</h2></div><span className="ps-count-pill">{users.length.toString().padStart(2,'0')}</span></div><div className="ps-team-summary"><div className="ps-team-avatars">{users.slice(0,4).map((user) => <span key={user.id} title={user.name}>{user.name.slice(0,1).toUpperCase()}</span>)}</div><small>{users.length === 1 ? 'Just you for now' : `${users.length} people sharing this space`}</small></div><div className="ps-member-list">{users.map((user) => {const d = me && user.id !== selfId ? distance(me,user) : null;const userStatus = normalizePresence(user.status);const label = userStatus === 'away' ? 'Away' : user.id === selfId ? 'Your position' : d <= DISTANCE_LIMIT ? 'Nearby · Voice range' : `${d}px away`;return <div className="ps-member" key={user.id}><div className={`ps-member-avatar ${user.id === selfId ? 'self' : ''}`}>{user.name.slice(0,1).toUpperCase()}</div><div className="ps-member-copy"><b>{user.name}{user.id === selfId ? ' (you)' : ''}</b><small>{label}</small></div><i className={`ps-member-status ${userStatus === 'away' ? 'away' : ''}`}/></div>;})}</div></section>
 
-              <p className="muted small-text">
-                Enable your microphone to talk. Move closer to teammates
-                to hear them more clearly.
-              </p>
+              <section className="ps-side-card ps-nearby-card"><div className="ps-side-title"><div><span className="ps-overline">PROXIMITY</span><h2>Within reach</h2></div><span className="ps-count-pill accent">{nearby.length}</span></div>{nearby.length ? nearby.map((user) => <div className="ps-nearby-row" key={user.id}><span className="ps-signal-icon">)))</span><div><b>{user.name}</b><small>{distance(me,user)}px · Voice can connect</small></div><span className="ps-nearby-dot"/></div>) : <div className="ps-nearby-empty"><span>⌖</span><b>No one in range</b><small>Move closer to a teammate to start a conversation.</small></div>}</section>
 
-              <button
-                className={micEnabled ? 'secondary full' : 'primary full'}
-                onClick={enableMicrophone}
-              >
-                {!micReady
-                  ? 'Enable microphone'
-                  : micEnabled
-                    ? 'Mute'
-                    : 'Unmute'}
-              </button>
+              <section className="ps-tip-card"><span className="ps-tip-icon">✦</span><div><b>Make it spontaneous</b><p>Walk your avatar over to a teammate. Your voices get clearer as you get closer.</p></div></section>
+            </aside>
+          </div>
 
-              <div className="audio-status">
-                <span className={micEnabled ? 'good-dot' : 'neutral-dot'} />
-                {!micReady
-                  ? 'Microphone is off'
-                  : micEnabled
-                    ? 'Microphone is on'
-                    : 'Microphone is muted'}
-              </div>
-
-              <p className="muted small-text">
-                WebRTC uses STUN only. Some networks may require TURN for audio.
-              </p>
-            </section>
-
-            <section className="panel proximity-panel">
-              <div className="panel-heading">
-                <h2>Nearby teammates</h2><span className="count">{nearby.length}</span>
-              </div>
-
-              {nearby.length ? (
-                nearby.map((user) => (
-                  <div className="nearby-person" key={user.id}>
-                    <span className="wave">)))</span>
-                    <div>
-                      <strong>{user.name}</strong>
-                      <p>{distance(me, user)} px away</p>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="nearby-empty">
-                  <span>◎</span>
-                  <p>No one nearby yet</p>
-                  <small>Move your avatar closer to a teammate.</small>
-                </div>
-              )}
-            </section>
-          </aside>
+          <footer className="ps-footer"><span>PROXISPEAK <b>·</b> SPATIAL WORKSPACE</span><span>{otherParticipants.length} TEAMMATE{otherParticipants.length === 1 ? '' : 'S'} <b>·</b> ROOM {roomId.toUpperCase()}</span></footer>
         </div>
 
-        <footer className="footer">
-          <span>ProxiSpeak prototype</span>
-          <span>
-            {users.length} participant{users.length === 1 ? '' : 's'} · Room: {roomId}
-          </span>
-        </footer>
-
-        <p className="status bottom-status">{status}</p>
-      </div>
+        <div className="ps-audio-dock"><div className="ps-audio-identity"><span className={`ps-audio-avatar ${micEnabled ? 'speaking' : ''}`}>{(name.trim() || 'M').slice(0,1).toUpperCase()}</span><div><b>Your audio</b><small>{micEnabled ? 'Microphone is live' : micReady ? 'Microphone muted' : 'Microphone is off'}</small></div></div><div className="ps-audio-center"><span className={`ps-audio-state ${micEnabled ? 'active' : ''}`}><i/>{micEnabled ? 'VOICE ACTIVE' : 'VOICE STANDBY'}</span><div className={`ps-audio-wave ${micEnabled ? 'moving' : ''}`}><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div><small>Spatial audio · {nearby.length} nearby</small></div><button className={`ps-mic-button ${micEnabled ? 'muted' : ''}`} onClick={enableMicrophone}><span>{micEnabled ? 'Ⅱ' : '♩'}</span>{!micReady ? 'Enable microphone' : micEnabled ? 'Mute microphone' : 'Unmute microphone'}</button><div className="ps-audio-help">{status}</div></div>
+      </section>
     </main>
   );
 }
