@@ -31,8 +31,10 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [micEnabled, setMicEnabled] = useState(false);
   const [micReady, setMicReady] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
   const [presenceStatus, setPresenceStatus] = useState('auto');
   const [status, setStatus] = useState('Join the office to get started.');
+  const [activePanel, setActivePanel] = useState('workspace');
 
   const socketRef = useRef(null);
   const selfRef = useRef(null);
@@ -704,6 +706,77 @@ export default function App() {
     }
   }
 
+  // Measure actual microphone input so the dock waveform reacts to speech.
+  useEffect(() => {
+    if (!micEnabled || !streamRef.current) {
+      setAudioLevel(0);
+      return;
+    }
+
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+
+    let audioContext;
+    let analyser;
+    let source;
+    let animationFrame;
+    let lastUpdate = 0;
+    let cancelled = false;
+
+    const startMeter = async () => {
+      try {
+        audioContext = new AudioContextClass();
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+        }
+        if (cancelled || !streamRef.current) return;
+
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.72;
+        source = audioContext.createMediaStreamSource(streamRef.current);
+        source.connect(analyser);
+
+        const samples = new Uint8Array(analyser.fftSize);
+        const measure = (time) => {
+          if (cancelled || !analyser) return;
+          analyser.getByteTimeDomainData(samples);
+
+          let sum = 0;
+          for (let i = 0; i < samples.length; i += 1) {
+            const value = (samples[i] - 128) / 128;
+            sum += value * value;
+          }
+
+          const rms = Math.sqrt(sum / samples.length);
+          const normalized = Math.max(0, Math.min(1, (rms - 0.008) * 12));
+          if (time - lastUpdate > 45) {
+            setAudioLevel(normalized);
+            lastUpdate = time;
+          }
+          animationFrame = requestAnimationFrame(measure);
+        };
+
+        animationFrame = requestAnimationFrame(measure);
+      } catch (error) {
+        console.warn('Microphone level visualizer unavailable:', error);
+      }
+    };
+
+    startMeter();
+
+    return () => {
+      cancelled = true;
+      if (animationFrame) cancelAnimationFrame(animationFrame);
+      try { source?.disconnect(); } catch {}
+      try { analyser?.disconnect(); } catch {}
+      if (audioContext && audioContext.state !== 'closed') {
+        audioContext.close().catch(() => {});
+      }
+      setAudioLevel(0);
+    };
+  }, [micEnabled]);
+
   // Leave the office and release local media and remote audio.
   const leaveOffice = useCallback(() => {
     socketRef.current?.disconnect();
@@ -798,9 +871,27 @@ export default function App() {
       <aside className="ps-rail">
         <div className="ps-rail-logo">PS</div>
         <div className="ps-rail-divider" />
-        <button className="ps-rail-item active" title="Workspace" aria-label="Workspace"><span>⌂</span></button>
-        <button className="ps-rail-item" title="People" aria-label="People"><span>♧</span></button>
-        <button className="ps-rail-item" title="Audio" aria-label="Audio"><span>♫</span></button>
+        <button
+          className={`ps-rail-item ${activePanel === 'workspace' ? 'active' : ''}`}
+          title="Workspace"
+          aria-label="Workspace"
+          aria-pressed={activePanel === 'workspace'}
+          onClick={() => setActivePanel('workspace')}
+        ><span>⌂</span></button>
+        <button
+          className={`ps-rail-item ${activePanel === 'team' ? 'active' : ''}`}
+          title="People"
+          aria-label="People"
+          aria-pressed={activePanel === 'team'}
+          onClick={() => setActivePanel(activePanel === 'team' ? 'workspace' : 'team')}
+        ><span>♧</span></button>
+        <button
+          className={`ps-rail-item ${activePanel === 'audio' ? 'active' : ''}`}
+          title="Audio"
+          aria-label="Audio"
+          aria-pressed={activePanel === 'audio'}
+          onClick={() => setActivePanel(activePanel === 'audio' ? 'workspace' : 'audio')}
+        ><span>♫</span></button>
         <div className="ps-rail-spacer" />
         <div className="ps-rail-avatar">{(name.trim() || 'M').slice(0,1).toUpperCase()}</div>
       </aside>
@@ -853,7 +944,73 @@ export default function App() {
           <footer className="ps-footer"><span>PROXISPEAK <b>·</b> SPATIAL WORKSPACE</span><span>{otherParticipants.length} TEAMMATE{otherParticipants.length === 1 ? '' : 'S'} <b>·</b> ROOM {roomId.toUpperCase()}</span></footer>
         </div>
 
-        <div className="ps-audio-dock"><div className="ps-audio-identity"><span className={`ps-audio-avatar ${micEnabled ? 'speaking' : ''}`}>{(name.trim() || 'M').slice(0,1).toUpperCase()}</span><div><b>Your audio</b><small>{micEnabled ? 'Microphone is live' : micReady ? 'Microphone muted' : 'Microphone is off'}</small></div></div><div className="ps-audio-center"><span className={`ps-audio-state ${micEnabled ? 'active' : ''}`}><i/>{micEnabled ? 'VOICE ACTIVE' : 'VOICE STANDBY'}</span><div className={`ps-audio-wave ${micEnabled ? 'moving' : ''}`}><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/><i/></div><small>Spatial audio · {nearby.length} nearby</small></div><button className={`ps-mic-button ${micEnabled ? 'muted' : ''}`} onClick={enableMicrophone}><span>{micEnabled ? 'Ⅱ' : '♩'}</span>{!micReady ? 'Enable microphone' : micEnabled ? 'Mute microphone' : 'Unmute microphone'}</button><div className="ps-audio-help">{status}</div></div>
+        <div className="ps-audio-dock"><div className="ps-audio-identity"><span className={`ps-audio-avatar ${micEnabled ? 'speaking' : ''}`}>{(name.trim() || 'M').slice(0,1).toUpperCase()}</span><div><b>Your audio</b><small>{micEnabled ? 'Microphone is live' : micReady ? 'Microphone muted' : 'Microphone is off'}</small></div></div><div className="ps-audio-center"><span className={`ps-audio-state ${micEnabled ? 'active' : ''}`}><i/>{micEnabled ? 'VOICE ACTIVE' : 'VOICE STANDBY'}</span><div
+              className={`ps-audio-wave ${micEnabled && audioLevel > 0.035 ? 'speaking' : ''}`}
+              aria-label={`Microphone input level ${Math.round(audioLevel * 100)} percent`}
+              title={`Microphone input: ${Math.round(audioLevel * 100)}%`}
+            >
+              {Array.from({ length: 13 }, (_, index) => {
+                const variation = 0.55 + ((index * 7) % 9) / 12;
+                const height = 3 + audioLevel * 23 * variation;
+                return <i key={index} style={{ height: `${height}px` }} />;
+              })}
+            </div><small>Spatial audio · {nearby.length} nearby</small></div><button className={`ps-mic-button ${micEnabled ? 'muted' : ''}`} onClick={enableMicrophone}><span>{micEnabled ? 'Ⅱ' : '♩'}</span>{!micReady ? 'Enable microphone' : micEnabled ? 'Mute microphone' : 'Unmute microphone'}</button><div className="ps-audio-help">{status}</div></div>
+
+        {activePanel !== 'workspace' && (
+          <div className="ps-panel-layer">
+            <button
+              className="ps-panel-backdrop"
+              aria-label="Close panel"
+              onClick={() => setActivePanel('workspace')}
+            />
+            <section className="ps-drawer" role="dialog" aria-modal="true"
+              aria-label={activePanel === 'team' ? 'Team panel' : 'Audio panel'}>
+              <div className="ps-drawer-head">
+                <div>
+                  <span className="ps-overline">{activePanel === 'team' ? 'WORKSPACE PEOPLE' : 'VOICE SETTINGS'}</span>
+                  <h2>{activePanel === 'team' ? 'Your team' : 'Audio controls'}</h2>
+                  <p>{activePanel === 'team' ? `${users.length} people in ${roomId}` : 'Manage your microphone and spatial voice status.'}</p>
+                </div>
+                <button className="ps-drawer-close" onClick={() => setActivePanel('workspace')} aria-label="Close">×</button>
+              </div>
+
+              {activePanel === 'team' ? (
+                <div className="ps-drawer-content">
+                  <div className="ps-drawer-stat"><span>IN THIS SPACE</span><b>{users.length.toString().padStart(2, '0')}</b></div>
+                  <div className="ps-drawer-members">
+                    {users.map((user) => {
+                      const d = me && user.id !== selfId ? distance(me, user) : null;
+                      const userStatus = normalizePresence(user.status);
+                      return (
+                        <div className="ps-drawer-member" key={user.id}>
+                          <span className={`ps-member-avatar ${user.id === selfId ? 'self' : ''}`}>{user.name.slice(0, 1).toUpperCase()}</span>
+                          <span className="ps-drawer-member-copy"><b>{user.name}{user.id === selfId ? ' (you)' : ''}</b><small>{user.id === selfId ? 'Your position' : userStatus === 'away' ? 'Away' : d <= DISTANCE_LIMIT ? `Nearby · ${d}px` : `${d}px away`}</small></span>
+                          <i className={`ps-member-status ${userStatus === 'away' ? 'away' : ''}`} />
+                        </div>
+                      );
+                    })}
+                    {!users.length && <p className="ps-drawer-empty">No participants are currently in this space.</p>}
+                  </div>
+                  <div className="ps-drawer-stat proximity"><span>WITHIN VOICE RANGE</span><b>{nearby.length}</b></div>
+                  {nearby.map((user) => <div className="ps-drawer-nearby" key={user.id}><span>)))</span><div><b>{user.name}</b><small>{distance(me, user)}px · Voice range</small></div></div>)}
+                </div>
+              ) : (
+                <div className="ps-drawer-content">
+                  <div className="ps-audio-status-card">
+                    <span className={`ps-audio-avatar ${micEnabled ? 'speaking' : ''}`}>{(name.trim() || 'M').slice(0, 1).toUpperCase()}</span>
+                    <div><b>{micEnabled ? 'Microphone is live' : micReady ? 'Microphone is muted' : 'Microphone is off'}</b><small>{micEnabled ? `Input level · ${Math.round(audioLevel * 100)}%` : 'Enable your microphone to speak.'}</small></div>
+                  </div>
+                  <button className="ps-drawer-mic" onClick={enableMicrophone}>
+                    {micEnabled ? 'Mute microphone' : micReady ? 'Unmute microphone' : 'Enable microphone'}
+                  </button>
+                  <div className="ps-drawer-stat"><span>NEARBY TEAMMATES</span><b>{nearby.length}</b></div>
+                  <p className="ps-drawer-note">Spatial audio adjusts volume based on avatar distance. Move closer to a teammate to hear them more clearly.</p>
+                  <div className="ps-drawer-status"><i className={micEnabled ? 'on' : ''}/>{status}</div>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
       </section>
     </main>
   );
