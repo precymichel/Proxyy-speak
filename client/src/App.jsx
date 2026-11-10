@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import { io } from 'socket.io-client';
+import { AudioEngine } from './audio/AudioEngine.js';
 
 const SERVER_URL =
   import.meta.env.VITE_SERVER_URL || 'http://localhost:4000';
@@ -42,12 +43,21 @@ export default function App() {
   const streamRef = useRef(null);
   const peersRef = useRef(new Map());
   const audioElsRef = useRef(new Map());
+  const audioEngineRef = useRef(null);
   const usersRef = useRef([]);
   const selfIdRef = useRef('');
   const roomRef = useRef('main-office');
   const presenceRef = useRef('auto');
   const pendingIceRef = useRef(new Map());
   const makingOfferRef = useRef(new Set());
+
+  useEffect(() => {
+    audioEngineRef.current = new AudioEngine({ maxDistance: AUDIO_RANGE });
+    return () => {
+      audioEngineRef.current?.close();
+      audioEngineRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     usersRef.current = users;
@@ -107,6 +117,7 @@ export default function App() {
       audio.remove();
     }
 
+    audioEngineRef.current?.removePeer(peerId);
     audioElsRef.current.delete(peerId);
   }, []);
 
@@ -156,7 +167,8 @@ export default function App() {
         }
 
         audio.srcObject = remoteStream;
-        audio.volume = 0.8;
+        audio.volume = 1;
+        audioEngineRef.current?.attachElement(peerId, audio);
 
         try {
           await audio.play();
@@ -551,18 +563,19 @@ export default function App() {
     };
   }, [joined, move]);
 
-  // Spatial volume based on avatar distance.
+  // Spatial audio: remote volume and stereo position follow avatar coordinates.
   useEffect(() => {
     if (!me) return;
 
     users.forEach((user) => {
       if (user.id === selfId) return;
 
-      const audio = audioElsRef.current.get(user.id);
-      if (!audio) return;
-
       const d = distance(me, user);
-      audio.volume = Math.max(0, Math.min(1, 1 - d / AUDIO_RANGE));
+      audioEngineRef.current?.updatePeer(user.id, {
+        distance: d,
+        deltaX: user.x - me.x,
+        maxDistance: AUDIO_RANGE,
+      });
     });
   }, [users, selfId, me]);
 
@@ -606,6 +619,7 @@ export default function App() {
   ]);
 
   async function enableMicrophone() {
+    await audioEngineRef.current?.resume();
     // If a microphone stream already exists, toggle mute/unmute without
     // stopping the track or requesting permission again.
     if (streamRef.current) {

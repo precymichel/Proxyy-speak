@@ -165,14 +165,15 @@ const findNearbyUsers = async (
           },
         })
         .toArray();
-        console.log('\n========== MONGODB $near QUERY ==========');
-console.log('Room:', roomId);
-console.log('Coordinates:', toIndexedCoords(x, y));
-console.log(
-  'Maximum distance:',
-  PROXIMITY_RADIUS / COORD_SCALE
-);
-console.log('=========================================\n');
+
+      console.log('\n========== MONGODB $near QUERY ==========');
+      console.log('Room:', roomId);
+      console.log('Coordinates:', toIndexedCoords(x, y));
+      console.log(
+        'Maximum distance:',
+        PROXIMITY_RADIUS / COORD_SCALE
+      );
+      console.log('=========================================\n');
 
       // Return only users currently connected to this server.
       const activeSocketIds = new Set(
@@ -274,43 +275,62 @@ const broadcastRoomProximity = async (roomId) => {
     })
   );
 };
-
 // --------------------------------------------------
 // REDIS ADAPTER (OPTIONAL)
 // --------------------------------------------------
+// Configure in server/.env:
+// REDIS_URL=redis://127.0.0.1:6379
+//
+// Memurai uses the Redis protocol and normally listens on port 6379.
+// When REDIS_URL is absent, this server runs in single-instance mode.
 
 if (process.env.REDIS_URL) {
+  let pubClient;
+  let subClient;
+
   try {
-    const pubClient = createClient({
+    pubClient = createClient({
       url: process.env.REDIS_URL,
     });
 
-    const subClient = pubClient.duplicate();
+    subClient = pubClient.duplicate();
 
-    pubClient.on('error', (error) =>
-      console.error('Redis publisher error:', error.message)
-    );
+    pubClient.on('error', (error) => {
+      console.error('Redis publisher error:', error.message);
+    });
 
-    subClient.on('error', (error) =>
-      console.error('Redis subscriber error:', error.message)
-    );
+    subClient.on('error', (error) => {
+      console.error('Redis subscriber error:', error.message);
+    });
 
+    // Both connections are required by the Socket.IO Redis adapter.
     await Promise.all([
       pubClient.connect(),
       subClient.connect(),
     ]);
 
     io.adapter(createAdapter(pubClient, subClient));
-
     redisClients = [pubClient, subClient];
 
+    console.log('Redis connected:', process.env.REDIS_URL);
     console.log('Socket.IO Redis adapter enabled');
   } catch (error) {
     console.error(
       'Redis adapter unavailable; using single-instance Socket.IO:',
       error.message
     );
+
+    // Avoid leaving a half-open Redis connection after a failed setup.
+    await Promise.allSettled(
+      [pubClient, subClient]
+        .filter((client) => client?.isOpen)
+        .map((client) => client.quit())
+    );
   }
+} else {
+  console.warn(
+    'REDIS_URL is not configured. Running Socket.IO in single-instance mode.'
+  );
 }
 
 // --------------------------------------------------
@@ -412,7 +432,6 @@ app.put('/api/rooms/:roomId', async (req, res) => {
     });
   }
 });
-
 // --------------------------------------------------
 // SOCKET.IO EVENTS
 // --------------------------------------------------
@@ -690,7 +709,6 @@ io.on('connection', (socket) => {
     await broadcastRoomProximity(user.roomId);
   });
 });
-
 // --------------------------------------------------
 // AUTOMATIC PRESENCE REFRESH
 // --------------------------------------------------
@@ -759,8 +777,13 @@ httpServer.listen(PORT, () => {
   console.log('Spatial utilities integrated successfully');
 });
 
-// Graceful shutdown
+// --------------------------------------------------
+// GRACEFUL SHUTDOWN
+// --------------------------------------------------
+
 const shutdown = async () => {
+  console.log('Shutting down ProxiSpeak server...');
+
   clearInterval(presenceTimer);
 
   httpServer.close();
@@ -776,6 +799,8 @@ const shutdown = async () => {
   if (mongoClient) {
     await mongoClient.close().catch(() => {});
   }
+
+  console.log('ProxiSpeak server shut down successfully');
 };
 
 process.on('SIGINT', shutdown);
