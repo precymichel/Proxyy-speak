@@ -18,9 +18,11 @@ import {
 dotenv.config();
 
 const PORT = Number(process.env.PORT || 4000);
-const CLIENT_ORIGIN =
-  process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 
+const CLIENT_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+];
 const AWAY_AFTER_MS = 60_000;
 const PRESENCE_REFRESH_MS = 15_000;
 const PROXIMITY_RADIUS = 100;
@@ -38,7 +40,11 @@ const app = express();
 
 app.disable('x-powered-by');
 app.use(helmet({ crossOriginEmbedderPolicy: false }));
-app.use(cors({ origin: CLIENT_ORIGIN }));
+app.use(
+  cors({
+    origin: CLIENT_ORIGINS,
+  })
+);
 
 app.use(
   '/api/',
@@ -56,7 +62,7 @@ const httpServer = http.createServer(app);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: CLIENT_ORIGIN,
+    origin: CLIENT_ORIGINS,
     methods: ['GET', 'POST'],
   },
 });
