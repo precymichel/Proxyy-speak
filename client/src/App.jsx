@@ -956,7 +956,34 @@ export default function App() {
                 {users.map((user) => {
                   const d = me && user.id !== selfId ? distance(me, user) : null;
                   const close = d !== null && d <= DISTANCE_LIMIT;
-                  return <div key={user.id} className={`ps-map-person ${user.id === selfId ? 'is-self' : ''} ${close ? 'is-nearby' : ''}`} style={{left:`${(user.x / 800) * 100}%`,top:`${(user.y / 500) * 100}%`}} title={`${user.name}${d !== null ? ` · ${d}px away` : ''}`}><div className="ps-person-marker">{user.name.slice(0,1).toUpperCase()}<span/></div><span className="ps-map-name">{user.name}{user.id === selfId ? ' (you)' : ''}</span></div>;
+                  const isSpeaking =
+                    user.id === selfId && micEnabled && audioLevel > 0.035;
+                  const voiceIntensity = isSpeaking
+                    ? Math.max(0, Math.min(1, audioLevel))
+                    : 0;
+                  return (
+                    <div
+                      key={user.id}
+                      className={`ps-map-person ${user.id === selfId ? 'is-self' : ''} ${close ? 'is-nearby' : ''} ${isSpeaking ? 'is-speaking' : ''}`}
+                      style={{
+                        left: `${(user.x / 800) * 100}%`,
+                        top: `${(user.y / 500) * 100}%`,
+                        '--voice-intensity': voiceIntensity.toFixed(2),
+                        '--voice-opacity': (0.35 + voiceIntensity * 0.65).toFixed(2),
+                        '--voice-scale': (1 + voiceIntensity * 0.24).toFixed(2),
+                      }}
+                      title={`${user.name}${d !== null ? ` · ${d}px away` : ''}`}
+                    >
+                      <span className="ps-voice-ring" aria-hidden="true" />
+                      <div className="ps-person-marker">
+                        {user.name.slice(0, 1).toUpperCase()}
+                        <span />
+                      </div>
+                      <span className="ps-map-name">
+                        {user.name}{user.id === selfId ? ' (you)' : ''}
+                      </span>
+                    </div>
+                  );
                 })}
                 {!users.length && <div className="ps-map-empty"><span>⌁</span><b>Your workspace is ready</b><small>Waiting for teammates to arrive</small></div>}
               </div>
