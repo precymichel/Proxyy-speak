@@ -1,4 +1,3 @@
-
 import React, {
   useCallback,
   useEffect,
@@ -633,10 +632,20 @@ export default function App() {
       }
 
       const shouldEnable = tracks.some((track) => !track.enabled);
+      const muted = !shouldEnable;
 
-      tracks.forEach((track) => {
-        track.enabled = shouldEnable;
-      });
+      // Apply mute to the captured stream and every active WebRTC sender.
+      // This keeps the real outgoing audio state aligned with the button.
+      const applied = audioEngineRef.current?.setMicrophoneMuted(
+        streamRef.current,
+        muted,
+        peersRef.current,
+      );
+
+      if (applied === false) {
+        setStatus('Could not change microphone state. Please try again.');
+        return;
+      }
 
       setMicReady(true);
       setMicEnabled(shouldEnable);
@@ -672,10 +681,18 @@ export default function App() {
 
       streamRef.current = stream;
 
-      // Start unmuted. Muting later only toggles track.enabled.
-      audioTracks.forEach((track) => {
-        track.enabled = true;
-      });
+      // Start unmuted and apply the state to the real WebRTC audio tracks.
+      const applied = audioEngineRef.current?.setMicrophoneMuted(
+        stream,
+        false,
+        peersRef.current,
+      );
+
+      if (applied === false) {
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        throw new Error('Could not activate the microphone audio track.');
+      }
 
       setMicReady(true);
       setMicEnabled(true);

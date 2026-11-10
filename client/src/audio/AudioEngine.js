@@ -89,6 +89,40 @@ export class AudioEngine {
     }
   }
 
+  /**
+   * Applies microphone mute to the captured stream and active WebRTC senders.
+   * MediaStreamTrack.enabled=false sends silence; applying it to each sender's
+   * current track also covers connections created before/after a UI toggle.
+   */
+  setMicrophoneMuted(stream, muted, peerConnections = new Map()) {
+    if (!stream) {
+      console.warn('Cannot change microphone mute: stream not found.');
+      return false;
+    }
+
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length) {
+      console.warn('Cannot change microphone mute: no audio tracks found.');
+      return false;
+    }
+
+    audioTracks.forEach((track) => {
+      track.enabled = !muted;
+    });
+
+    for (const pc of peerConnections.values()) {
+      if (!pc || typeof pc.getSenders !== 'function') continue;
+
+      pc.getSenders().forEach((sender) => {
+        if (sender.track?.kind === 'audio') {
+          sender.track.enabled = !muted;
+        }
+      });
+    }
+
+    return audioTracks.every((track) => track.enabled === !muted);
+  }
+
   removePeer(peerId) {
     const nodes = this.connections.get(peerId);
     if (!nodes) return;
