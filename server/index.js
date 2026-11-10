@@ -9,6 +9,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import dotenv from 'dotenv';
 import { Server } from 'socket.io';
 import { MongoClient } from 'mongodb';
+import { randomUUID } from 'node:crypto';
 
 import {
   distance2D,
@@ -28,6 +29,19 @@ const AWAY_AFTER_MS = 60_000;
 const PRESENCE_REFRESH_MS = 15_000;
 const PROXIMITY_RADIUS = 100;
 const PRESENCE_TTL_SECONDS = 45;
+
+// Distributed backend instance monitoring.
+const INSTANCE_ID = randomUUID();
+const INSTANCE_HEARTBEAT_TTL_SECONDS = 60;
+const INSTANCE_HEARTBEAT_INTERVAL_MS = 15_000;
+const INSTANCE_CLEANUP_INTERVAL_MS = 20_000;
+const INSTANCE_USER_SET_TTL_SECONDS = 120;
+
+const instanceHeartbeatKey = (id) =>
+  `proxispeak:instance:${id}:heartbeat`;
+
+const instanceUsersKey = (id) =>
+  `proxispeak:instance:${id}:users`;
 
 const COORD_SCALE = 10;
 
@@ -143,15 +157,31 @@ const saveSharedUser = async (user) => {
 
   if (!redis) return;
 
+  const sharedUser = {
+    ...user,
+    instanceId: INSTANCE_ID,
+  };
+
   await redis.set(
     userPresenceKey(user.id),
-    JSON.stringify(user),
+    JSON.stringify(sharedUser),
     { EX: PRESENCE_TTL_SECONDS }
   );
 
   await redis.sAdd(
     roomPresenceKey(user.roomId),
     user.id
+  );
+
+  // Index sockets owned by this process for crash recovery.
+  await redis.sAdd(
+    instanceUsersKey(INSTANCE_ID),
+    user.id
+  );
+
+  await redis.expire(
+    instanceUsersKey(INSTANCE_ID),
+    INSTANCE_USER_SET_TTL_SECONDS
   );
 };
 
@@ -242,6 +272,163 @@ const updateSharedUser = async (user) => {
   await saveSharedUser(user);
 };
 
+// --------------------------------------------------
+// DISTRIBUTED INSTANCE HEARTBEAT AND RECOVERY
+// --------------------------------------------------
+
+const writeInstanceHeartbeat = async () => {
+  const redis = presenceRedis();
+  if (!redis) return;
+
+  await redis.set(
+    instanceHeartbeatKey(INSTANCE_ID),
+    String(Date.now()),
+    { EX: INSTANCE_HEARTBEAT_TTL_SECONDS }
+  );
+
+  await redis.expire(
+    instanceUsersKey(INSTANCE_ID),
+    INSTANCE_USER_SET_TTL_SECONDS
+  );
+};
+
+const cleanupFailedInstance = async (failedInstanceId) => {
+  const redis = presenceRedis();
+
+  if (!redis || !failedInstanceId || failedInstanceId === INSTANCE_ID) {
+    return;
+  }
+
+  // Recheck immediately before cleanup.
+  if (await redis.exists(instanceHeartbeatKey(failedInstanceId))) {
+    return;
+  }
+
+  const failedUsersKey = instanceUsersKey(failedInstanceId);
+  const socketIds = await redis.sMembers(failedUsersKey);
+  const affectedRooms = new Set();
+
+  for (const socketId of socketIds) {
+    const presenceKey = userPresenceKey(socketId);
+    const raw = await redis.get(presenceKey);
+
+    if (raw) {
+      try {
+        const user = JSON.parse(raw);
+
+        // Never remove a record that has been reassigned.
+        if (user.instanceId !== failedInstanceId) {
+          continue;
+        }
+
+        await redis.del(presenceKey);
+        await redis.sRem(roomPresenceKey(user.roomId), socketId);
+        affectedRooms.add(user.roomId);
+
+        if (positionsCollection) {
+          await positionsCollection.deleteOne({
+            roomId: user.roomId,
+            socketId,
+          });
+        }
+      } catch (error) {
+        console.error(
+          `Could not clean presence for ${socketId}:`,
+          error.message
+        );
+      }
+    } else {
+      // The user's short-lived presence key may have expired already.
+      // Remove its ID from room sets and MongoDB using the unique socket ID.
+      try {
+        for await (const roomKey of redis.scanIterator({
+          MATCH: 'proxispeak:presence:room:*',
+          COUNT: 100,
+        })) {
+          const removed = await redis.sRem(roomKey, socketId);
+
+          if (removed) {
+            const roomId = roomKey.replace(
+              'proxispeak:presence:room:',
+              ''
+            );
+            affectedRooms.add(roomId);
+          }
+        }
+
+        if (positionsCollection) {
+          await positionsCollection.deleteMany({ socketId });
+        }
+      } catch (error) {
+        console.error(
+          `Stale socket cleanup failed for ${socketId}:`,
+          error.message
+        );
+      }
+    }
+  }
+
+  await redis.del(failedUsersKey);
+  await redis.del(instanceHeartbeatKey(failedInstanceId));
+
+  for (const roomId of affectedRooms) {
+    try {
+      await broadcastRoomUsers(roomId);
+      await broadcastRoomProximity(roomId);
+
+      io.to(roomId).emit('presence:instance-recovered', {
+        instanceId: failedInstanceId,
+      });
+    } catch (error) {
+      console.error(
+        `Recovery broadcast failed for room ${roomId}:`,
+        error.message
+      );
+    }
+  }
+
+  if (socketIds.length) {
+    console.log(
+      `Recovered instance ${failedInstanceId}; processed ${socketIds.length} tracked socket(s)`
+    );
+  }
+};
+
+const recoverFailedInstances = async () => {
+  const redis = presenceRedis();
+  if (!redis) return;
+
+  try {
+    // The per-instance user index outlives the heartbeat long enough
+    // to identify owners whose heartbeat has expired.
+    for await (const key of redis.scanIterator({
+      MATCH: 'proxispeak:instance:*:users',
+      COUNT: 100,
+    })) {
+      const failedInstanceId = key
+        .replace('proxispeak:instance:', '')
+        .replace(':users', '');
+
+      if (!failedInstanceId || failedInstanceId === INSTANCE_ID) {
+        continue;
+      }
+
+      const heartbeatAlive = await redis.exists(
+        instanceHeartbeatKey(failedInstanceId)
+      );
+
+      if (!heartbeatAlive) {
+        await cleanupFailedInstance(failedInstanceId);
+      }
+    }
+  } catch (error) {
+    console.error(
+      'Failed-instance recovery scan failed:',
+      error.message
+    );
+  }
+};
+
 const validCoord = (value, max) => {
   if (
     typeof value !== 'number' ||
@@ -306,6 +493,20 @@ if (process.env.REDIS_URL) {
   console.warn(
     'REDIS_URL missing. Running in single-instance mode.'
   );
+}
+
+// Register this backend instance after Redis becomes available.
+if (presenceRedis()) {
+  try {
+    await writeInstanceHeartbeat();
+    console.log('Backend instance ID:', INSTANCE_ID);
+    console.log('Distributed heartbeat registered');
+  } catch (error) {
+    console.error(
+      'Backend heartbeat registration failed:',
+      error.message
+    );
+  }
 }
 
 // --------------------------------------------------
@@ -841,6 +1042,11 @@ io.on('connection', (socket) => {
           roomPresenceKey(user.roomId),
           socket.id
         );
+
+        await redis.sRem(
+          instanceUsersKey(INSTANCE_ID),
+          socket.id
+        );
       }
 
       if (positionsCollection) {
@@ -941,6 +1147,29 @@ const presenceTimer = setInterval(async () => {
 
 presenceTimer.unref();
 
+const instanceHeartbeatTimer = setInterval(() => {
+  writeInstanceHeartbeat().catch((error) => {
+    console.error('Instance heartbeat failed:', error.message);
+  });
+}, INSTANCE_HEARTBEAT_INTERVAL_MS);
+
+instanceHeartbeatTimer.unref();
+
+const instanceCleanupTimer = setInterval(() => {
+  recoverFailedInstances().catch((error) => {
+    console.error('Instance recovery task failed:', error.message);
+  });
+}, INSTANCE_CLEANUP_INTERVAL_MS);
+
+instanceCleanupTimer.unref();
+
+// Run a recovery scan after startup.
+if (presenceRedis()) {
+  recoverFailedInstances().catch((error) => {
+    console.error('Startup recovery scan failed:', error.message);
+  });
+}
+
 // --------------------------------------------------
 // START SERVER
 // --------------------------------------------------
@@ -949,6 +1178,8 @@ httpServer.listen(PORT, () => {
   console.log(
     `ProxiSpeak server running at http://localhost:${PORT}`
   );
+
+  console.log('Backend instance ID:', INSTANCE_ID);
 
   console.log(
     `MongoDB persistence: ${Boolean(positionsCollection)}`
@@ -981,31 +1212,32 @@ const shutdown = async () => {
   console.log('Shutting down ProxiSpeak server...');
 
   clearInterval(presenceTimer);
+  clearInterval(instanceHeartbeatTimer);
+  clearInterval(instanceCleanupTimer);
 
-  // Close HTTP and Socket.IO connections.
-  await new Promise((resolve) => {
-    httpServer.close(() => resolve());
-  });
-
-  // Remove this instance's active users from shared presence.
   const redis = presenceRedis();
+  const affectedRooms = new Set();
+  const removedUsers = [];
 
+  // Remove only records owned by this backend instance.
   if (redis) {
     for (const user of users.values()) {
       try {
-        await redis.del(userPresenceKey(user.id));
+        const current = await getSharedUser(user.id);
 
-        await redis.sRem(
-          roomPresenceKey(user.roomId),
-          user.id
-        );
+        if (current?.instanceId === INSTANCE_ID) {
+          await redis.del(userPresenceKey(user.id));
+          await redis.sRem(roomPresenceKey(user.roomId), user.id);
+          affectedRooms.add(user.roomId);
+          removedUsers.push(user);
 
-        io.to(user.roomId).emit('user:left', {
-          id: user.id,
-        });
-
-        await broadcastRoomUsers(user.roomId);
-        await broadcastRoomProximity(user.roomId);
+          if (positionsCollection) {
+            await positionsCollection.deleteOne({
+              roomId: user.roomId,
+              socketId: user.id,
+            });
+          }
+        }
       } catch (error) {
         console.error(
           'Shutdown presence cleanup failed:',
@@ -1013,13 +1245,44 @@ const shutdown = async () => {
         );
       }
     }
+
+    await redis.del(instanceUsersKey(INSTANCE_ID));
+    await redis.del(instanceHeartbeatKey(INSTANCE_ID));
+
+    for (const user of removedUsers) {
+      io.to(user.roomId).emit('user:left', {
+        id: user.id,
+      });
+    }
+
+    for (const roomId of affectedRooms) {
+      try {
+        await broadcastRoomUsers(roomId);
+        await broadcastRoomProximity(roomId);
+      } catch (error) {
+        console.error(
+          'Shutdown room broadcast failed:',
+          error.message
+        );
+      }
+    }
+  } else if (positionsCollection) {
+    for (const user of users.values()) {
+      await positionsCollection.deleteOne({
+        roomId: user.roomId,
+        socketId: user.id,
+      }).catch(() => {});
+    }
   }
+
+  // Close Socket.IO and the underlying HTTP server.
+  await new Promise((resolve) => {
+    io.close(() => resolve());
+  });
 
   if (redisClients) {
     await Promise.allSettled(
-      redisClients.map((client) =>
-        client.quit()
-      )
+      redisClients.map((client) => client.quit())
     );
   }
 
@@ -1033,7 +1296,6 @@ const shutdown = async () => {
   }
 
   console.log('ProxiSpeak server shut down successfully');
-
   process.exit(0);
 };
 
